@@ -1,0 +1,30 @@
+# Example GitHub Actions workflow using CloudRift runners.
+#
+# Prerequisites:
+#   1. Deploy the cloudrift-github-runner Cloud Function
+#   2. Configure a GitHub webhook pointing to the function URL
+#   3. (Optional) Add .cloudrift-runner.yml to your repo for per-job instance config
+#
+# The "cloudrift" label triggers the controller to provision an ephemeral
+# GPU VM. The runner automatically terminates after the job completes.
+
+name: GPU Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  gpu-test:
+    runs-on: [self-hosted, cloudrift]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check GPU
+        run: nvidia-smi
+
+      - name: Run GPU tests
+        run: |
+          pip install -r requirements.txt
+          pytest tests/ -v
