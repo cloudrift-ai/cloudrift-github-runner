@@ -4,19 +4,44 @@ variable "project_id" {
 }
 
 variable "region" {
-  description = "GCP region for all resources"
+  description = "GCP region"
   type        = string
   default     = "us-central1"
 }
 
-variable "source_zip_path" {
-  description = "Path to the zipped source code for Cloud Functions"
+variable "zone" {
+  description = "GCP zone for the VM"
+  type        = string
+  default     = "us-central1-a"
+}
+
+variable "machine_type" {
+  description = "GCE machine type"
+  type        = string
+  default     = "e2-small"
+}
+
+variable "domain" {
+  description = "Domain name for TLS (must have DNS pointing to the VM IP)"
   type        = string
 }
 
-variable "source_hash" {
-  description = "Hash of the source zip (used for cache-busting the GCS object name)"
+variable "cloudrift_api_key" {
+  description = "CloudRift API key"
   type        = string
+  sensitive   = true
+}
+
+variable "github_pat" {
+  description = "GitHub PAT with administration:write scope"
+  type        = string
+  sensitive   = true
+}
+
+variable "github_webhook_secret" {
+  description = "GitHub webhook HMAC secret"
+  type        = string
+  sensitive   = true
 }
 
 variable "cloudrift_api_url" {

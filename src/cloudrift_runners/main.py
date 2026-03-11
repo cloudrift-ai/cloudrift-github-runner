@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 
-import functions_framework
+from flask import Flask, request
 
 from .cleanup import cleanup_orphans
 from .cloudinit import generate_cloudinit_script
@@ -18,21 +18,74 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
-def _get_config() -> Config:
-    return Config.from_env()
-
-
 def _json_response(data: dict, status: int = 200) -> tuple[str, int, dict[str, str]]:
     return json.dumps(data), status, {"Content-Type": "application/json"}
 
 
-@functions_framework.http
-def handle_webhook(request):
+def create_app() -> Flask:
+    app = Flask(__name__)
+
     try:
-        config = _get_config()
+        config = Config.from_env()
     except ValueError as e:
         logger.error("Configuration error: %s", e)
-        return _json_response({"error": "server misconfigured"}, 500)
+        raise
+
+    state = StateStore()
+    cloudrift = CloudRiftClient(config.cloudrift_api_url, config.cloudrift_api_key)
+    github = GitHubClient(config.github_pat)
+
+    @app.route("/health", methods=["GET"])
+    def health():
+        return _json_response({"status": "ok"})
+
+    @app.route("/webhook", methods=["POST"])
+    def webhook():
+        return handle_webhook(
+            request, config=config, cloudrift=cloudrift, github=github, state=state
+        )
+
+    @app.route("/cleanup", methods=["POST"])
+    def cleanup():
+        count = cleanup_orphans(state, cloudrift, config.max_runner_lifetime_minutes)
+        return _json_response({"status": "ok", "cleaned": count})
+
+    # Start background cleanup scheduler
+    _start_scheduler(state, cloudrift, config)
+
+    return app
+
+
+def _start_scheduler(state, cloudrift, config):
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler
+
+        scheduler = BackgroundScheduler(daemon=True)
+        scheduler.add_job(
+            lambda: cleanup_orphans(state, cloudrift, config.max_runner_lifetime_minutes),
+            "interval",
+            minutes=10,
+            id="cleanup_orphans",
+        )
+        scheduler.add_job(
+            lambda: state.delete_old_jobs(),
+            "interval",
+            hours=1,
+            id="delete_old_jobs",
+        )
+        scheduler.start()
+        logger.info("Background scheduler started (cleanup every 10m, TTL every 1h)")
+    except Exception:
+        logger.exception("Failed to start background scheduler")
+
+
+def handle_webhook(request, *, config=None, cloudrift=None, github=None, state=None):
+    if config is None:
+        try:
+            config = Config.from_env()
+        except ValueError as e:
+            logger.error("Configuration error: %s", e)
+            return _json_response({"error": "server misconfigured"}, 500)
 
     body = request.get_data()
 
@@ -58,9 +111,12 @@ def handle_webhook(request):
         )
         return _json_response({"status": "skipped", "reason": "label mismatch"})
 
-    cloudrift = CloudRiftClient(config.cloudrift_api_url, config.cloudrift_api_key)
-    github = GitHubClient(config.github_pat)
-    state = StateStore()
+    if cloudrift is None:
+        cloudrift = CloudRiftClient(config.cloudrift_api_url, config.cloudrift_api_key)
+    if github is None:
+        github = GitHubClient(config.github_pat)
+    if state is None:
+        state = StateStore()
 
     if event.action == "queued":
         return _handle_queued(config, cloudrift, github, state, event)
@@ -169,16 +225,6 @@ def _handle_completed(cloudrift, state, event):
     return _json_response({"status": "terminated", "instance_id": record.instance_id})
 
 
-@functions_framework.http
-def cleanup_orphans_handler(request):
-    try:
-        config = _get_config()
-    except ValueError as e:
-        logger.error("Configuration error: %s", e)
-        return _json_response({"error": "server misconfigured"}, 500)
-
-    cloudrift = CloudRiftClient(config.cloudrift_api_url, config.cloudrift_api_key)
-    state = StateStore()
-
-    count = cleanup_orphans(state, cloudrift, config.max_runner_lifetime_minutes)
-    return _json_response({"status": "ok", "cleaned": count})
+def get_app() -> Flask:
+    """Entry point for gunicorn: `gunicorn 'cloudrift_runners.main:get_app()'`."""
+    return create_app()

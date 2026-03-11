@@ -1,50 +1,63 @@
 # cloudrift-github-runner
 
-Serverless GCP controller for ephemeral GitHub Actions runners on [CloudRift](https://cloudrift.ai) VMs. Provision GPU-enabled self-hosted runners on demand — VMs are created when jobs are queued and terminated when they complete.
+Docker-compose deployable controller for ephemeral GitHub Actions runners on [CloudRift](https://cloudrift.ai) VMs. Provision GPU-enabled self-hosted runners on demand — VMs are created when jobs are queued and terminated when they complete.
 
 ## How It Works
 
 1. A GitHub Actions workflow requests a `cloudrift`-labeled runner
-2. GitHub sends a `workflow_job` webhook to a GCP Cloud Function
-3. The function checks GPU availability, provisions a CloudRift VM with a JIT runner, and stores state in Firestore
+2. GitHub sends a `workflow_job` webhook to the controller (Flask app behind Caddy)
+3. The controller checks GPU availability, provisions a CloudRift VM with a JIT runner, and stores state in SQLite
 4. The runner picks up the job, executes it, and shuts down
-5. On the `completed` webhook, the function terminates the VM
-6. A scheduled cleanup function catches any orphaned VMs
+5. On the `completed` webhook, the controller terminates the VM
+6. A background scheduler cleans up any orphaned VMs every 10 minutes
 
 ## Quick Start
 
 ### Prerequisites
 
-- GCP project with billing enabled, `gcloud` CLI authenticated
-- [Terraform](https://www.terraform.io/) installed
+- Docker and Docker Compose
 - [CloudRift](https://cloudrift.ai) account and API key
 - GitHub PAT with `administration:write` scope (for runner registration)
+- A domain name with DNS pointing to your server (for automatic TLS)
 
 ### Deploy
 
 ```bash
-# 1. Store secrets in GCP Secret Manager (one-time)
-echo -n "your-cloudrift-api-key" | gcloud secrets versions add cloudrift-runner-api-key --data-file=-
-echo -n "ghp_your_github_pat" | gcloud secrets versions add cloudrift-runner-github-pat --data-file=-
-echo -n "your-webhook-secret" | gcloud secrets versions add cloudrift-runner-webhook-secret --data-file=-
+# 1. Clone and configure
+cp .env.example .env
+# Edit .env with your secrets and domain
 
-# 2. Initialize Terraform (one-time)
+# 2. Start services
+make docker-up
+
+# 3. Verify
+curl https://your-domain.com/health
+```
+
+### Deploy with Terraform (GCP VM)
+
+```bash
+# 1. Initialize Terraform
 make deploy-init
 
-# 3. Deploy (zips source and runs terraform apply)
+# 2. Deploy (provisions VM, installs Docker, starts containers)
 make deploy
 ```
 
-Terraform will prompt for `project_id`. To skip the prompt, create `deploy/terraform/terraform.tfvars`:
+Terraform will prompt for `project_id`, `domain`, and sensitive variables. To skip prompts, create `deploy/terraform/terraform.tfvars`:
 
 ```hcl
-project_id = "my-gcp-project"
+project_id            = "my-gcp-project"
+domain                = "runners.example.com"
+cloudrift_api_key     = "your-key"
+github_pat            = "ghp_xxx"
+github_webhook_secret = "your-secret"
 ```
 
 ### Configure GitHub Webhook
 
 1. Go to your repo (or org) Settings > Webhooks > Add webhook
-2. Set the Payload URL to the Cloud Function URL (from Terraform/deploy output)
+2. Set the Payload URL to `https://your-domain.com/webhook`
 3. Set Content type to `application/json`
 4. Set the Secret to the same value as `GITHUB_WEBHOOK_SECRET`
 5. Select "Workflow jobs" under events
@@ -85,27 +98,24 @@ jobs:
 
 ## Configuration
 
-| Env Var                       | Description                              | Default                    |
-|-------------------------------|------------------------------------------|----------------------------|
-| `CLOUDRIFT_API_KEY`           | CloudRift API key (via Secret Manager)   | required                   |
-| `CLOUDRIFT_API_URL`           | CloudRift API base URL                   | `https://api.cloudrift.ai` |
-| `CLOUDRIFT_WITH_PUBLIC_IP`    | Default public IP setting                | `false`                    |
-| `RUNNER_LABEL`                | Label to match                           | `cloudrift`                |
-| `MAX_RUNNER_LIFETIME_MINUTES` | VM auto-shutdown timeout                 | `120`                      |
-| `GITHUB_PAT`                  | GitHub PAT (via Secret Manager)          | required                   |
-| `GITHUB_WEBHOOK_SECRET`       | Webhook HMAC secret (via Secret Manager) | required                   |
+| Env Var                       | Description                  | Default                    |
+|-------------------------------|------------------------------|----------------------------|
+| `CLOUDRIFT_API_KEY`           | CloudRift API key            | required                   |
+| `CLOUDRIFT_API_URL`           | CloudRift API base URL       | `https://api.cloudrift.ai` |
+| `CLOUDRIFT_WITH_PUBLIC_IP`    | Default public IP setting    | `false`                    |
+| `RUNNER_LABEL`                | Label to match               | `cloudrift`                |
+| `MAX_RUNNER_LIFETIME_MINUTES` | VM auto-shutdown timeout     | `120`                      |
+| `GITHUB_PAT`                  | GitHub PAT                   | required                   |
+| `GITHUB_WEBHOOK_SECRET`       | Webhook HMAC secret          | required                   |
+| `DOMAIN`                      | Domain for TLS (Caddy)       | required                   |
+| `DATABASE_URL`                | SQLAlchemy database URL      | `sqlite:////app/data/runner_jobs.db` |
 
-Instance type and image URL are configured per-repo via `.cloudrift-runner.yml` (see above).
+## Architecture
 
-## Availability-Aware Provisioning
-
-Before renting a VM, the controller checks CloudRift instance type availability. If no nodes are available, it returns 200 without registering a runner. GitHub will fall back to other runners per your workflow configuration:
-
-```yaml
-runs-on:
-  group: cloudrift-gpu
-  fallback: ubuntu-latest
-```
+- **Flask + Gunicorn**: Single-worker, 4-thread web server on port 8080
+- **Caddy**: Reverse proxy with automatic Let's Encrypt TLS on ports 80/443
+- **SQLite**: Job state storage (persisted via Docker volume)
+- **APScheduler**: Background cleanup every 10 minutes + TTL cleanup every hour
 
 ## Development
 

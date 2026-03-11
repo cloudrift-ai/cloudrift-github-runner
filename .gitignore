@@ -9,3 +9,5 @@ build/
 *.tfvars
 *.tfstate*
 .terraform/
+.idea/
+.env

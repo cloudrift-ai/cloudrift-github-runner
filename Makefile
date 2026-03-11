@@ -1,7 +1,5 @@
-.PHONY: setup test lint fmt deploy deploy-init deploy-destroy clean
+.PHONY: setup test lint fmt deploy-init deploy deploy-destroy docker-build docker-up docker-down
 
-SOURCE_ZIP := /tmp/cloudrift-runner-source.zip
-SOURCE_HASH := $(shell cd $(CURDIR) && find src/ pyproject.toml -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
 TF_DIR := deploy/terraform
 
 setup:
@@ -39,19 +37,20 @@ fmt:
 	.venv/bin/ruff format src/ tests/
 	.venv/bin/ruff check --fix src/ tests/
 
-$(SOURCE_ZIP): src/ pyproject.toml
-	cd $(CURDIR) && zip -r $(SOURCE_ZIP) src/ pyproject.toml
+docker-build:
+	docker compose build
+
+docker-up:
+	docker compose up -d --build
+
+docker-down:
+	docker compose down
 
 deploy-init:
 	cd $(TF_DIR) && terraform init
 
-deploy: $(SOURCE_ZIP)
-	cd $(TF_DIR) && terraform apply \
-		-var="source_zip_path=$(SOURCE_ZIP)" \
-		-var="source_hash=$(SOURCE_HASH)"
+deploy:
+	cd $(TF_DIR) && terraform apply
 
 deploy-destroy:
 	cd $(TF_DIR) && terraform destroy
-
-clean:
-	rm -f $(SOURCE_ZIP)

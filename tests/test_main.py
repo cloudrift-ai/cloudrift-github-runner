@@ -42,17 +42,13 @@ _DEFAULT_JOB_CONFIG = ResolvedJobConfig(
 def _patch_deps(config):
     """Patch all external dependencies for main handler tests."""
     with (
-        patch("cloudrift_runners.main._get_config", return_value=config),
-        patch("cloudrift_runners.main.CloudRiftClient") as mock_cr,
-        patch("cloudrift_runners.main.GitHubClient") as mock_gh,
-        patch("cloudrift_runners.main.StateStore") as mock_state,
         patch(
             "cloudrift_runners.main.resolve_job_config", return_value=_DEFAULT_JOB_CONFIG
         ) as mock_resolve,
     ):
-        cr_inst = mock_cr.return_value
-        gh_inst = mock_gh.return_value
-        state_inst = mock_state.return_value
+        cr_inst = MagicMock()
+        gh_inst = MagicMock()
+        state_inst = MagicMock()
 
         cr_inst.check_availability.return_value = True
         cr_inst.rent_instance.return_value = "inst-999"
@@ -65,6 +61,7 @@ def _patch_deps(config):
         state_inst.get_job.return_value = MagicMock(instance_id="inst-999", status="running")
 
         yield {
+            "config": config,
             "cloudrift": cr_inst,
             "github": gh_inst,
             "state": state_inst,
@@ -72,14 +69,24 @@ def _patch_deps(config):
         }
 
 
+def _call_webhook(deps, req):
+    from cloudrift_runners.main import handle_webhook
+
+    return handle_webhook(
+        req,
+        config=deps["config"],
+        cloudrift=deps["cloudrift"],
+        github=deps["github"],
+        state=deps["state"],
+    )
+
+
 class TestHandleWebhook:
     def test_queued_provisions_runner(self, config, _patch_deps):
-        from cloudrift_runners.main import handle_webhook
-
         payload = make_workflow_job_payload(action="queued")
         req = _make_request(payload, config.github_webhook_secret)
 
-        data, status = _parse_response(handle_webhook(req))
+        data, status = _parse_response(_call_webhook(_patch_deps, req))
         assert status == 200
         assert data["status"] == "provisioned"
         assert data["instance_id"] == "inst-999"
@@ -88,43 +95,35 @@ class TestHandleWebhook:
         _patch_deps["cloudrift"].rent_instance.assert_called_once()
 
     def test_queued_skips_when_unavailable(self, config, _patch_deps):
-        from cloudrift_runners.main import handle_webhook
-
         _patch_deps["cloudrift"].check_availability.return_value = False
         payload = make_workflow_job_payload(action="queued")
         req = _make_request(payload, config.github_webhook_secret)
 
-        data, status = _parse_response(handle_webhook(req))
+        data, status = _parse_response(_call_webhook(_patch_deps, req))
         assert status == 200
         assert data["reason"] == "no capacity"
         _patch_deps["cloudrift"].rent_instance.assert_not_called()
 
     def test_queued_skips_when_no_config_file(self, config, _patch_deps):
-        from cloudrift_runners.main import handle_webhook
-
         _patch_deps["resolve_config"].return_value = None
         payload = make_workflow_job_payload(action="queued")
         req = _make_request(payload, config.github_webhook_secret)
 
-        data, status = _parse_response(handle_webhook(req))
+        data, status = _parse_response(_call_webhook(_patch_deps, req))
         assert status == 200
         assert data["reason"] == "no config file"
         _patch_deps["cloudrift"].rent_instance.assert_not_called()
 
     def test_completed_terminates(self, config, _patch_deps):
-        from cloudrift_runners.main import handle_webhook
-
         payload = make_workflow_job_payload(action="completed")
         req = _make_request(payload, config.github_webhook_secret)
 
-        data, status = _parse_response(handle_webhook(req))
+        data, status = _parse_response(_call_webhook(_patch_deps, req))
         assert status == 200
         assert data["status"] == "terminated"
         _patch_deps["cloudrift"].terminate_instance.assert_called_once_with("inst-999")
 
     def test_invalid_signature_returns_400(self, config, _patch_deps):
-        from cloudrift_runners.main import handle_webhook
-
         payload = make_workflow_job_payload()
         body = json.dumps(payload).encode()
         req = MagicMock()
@@ -134,22 +133,18 @@ class TestHandleWebhook:
             "X-GitHub-Event": "workflow_job",
         }
 
-        _data, status = _parse_response(handle_webhook(req))
+        _data, status = _parse_response(_call_webhook(_patch_deps, req))
         assert status == 400
 
     def test_label_mismatch_skips(self, config, _patch_deps):
-        from cloudrift_runners.main import handle_webhook
-
         payload = make_workflow_job_payload(labels=["self-hosted", "other-label"])
         req = _make_request(payload, config.github_webhook_secret)
 
-        data, status = _parse_response(handle_webhook(req))
+        data, status = _parse_response(_call_webhook(_patch_deps, req))
         assert status == 200
         assert data["reason"] == "label mismatch"
 
     def test_non_workflow_event_ignored(self, config, _patch_deps):
-        from cloudrift_runners.main import handle_webhook
-
         body = json.dumps({"action": "opened"}).encode()
         req = MagicMock()
         req.get_data.return_value = body
@@ -158,6 +153,6 @@ class TestHandleWebhook:
             "X-GitHub-Event": "pull_request",
         }
 
-        data, status = _parse_response(handle_webhook(req))
+        data, status = _parse_response(_call_webhook(_patch_deps, req))
         assert status == 200
         assert data["status"] == "ignored"

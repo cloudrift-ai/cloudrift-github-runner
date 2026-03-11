@@ -1,14 +1,14 @@
 output "webhook_url" {
   description = "URL to configure as the GitHub webhook endpoint"
-  value       = google_cloudfunctions2_function.webhook.url
+  value       = "https://${var.domain}/webhook"
 }
 
-output "cleanup_url" {
-  description = "URL of the cleanup Cloud Function"
-  value       = google_cloudfunctions2_function.cleanup.url
+output "vm_ip" {
+  description = "Static IP address of the runner VM"
+  value       = google_compute_address.runner.address
 }
 
-output "service_account_email" {
-  description = "Service account used by the Cloud Functions"
-  value       = google_service_account.runner_sa.email
+output "ssh_command" {
+  description = "SSH command to connect to the VM"
+  value       = "gcloud compute ssh ${google_compute_instance.runner.name} --zone=${var.zone}"
 }
