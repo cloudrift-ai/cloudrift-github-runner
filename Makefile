@@ -30,12 +30,12 @@ test:
 	.venv/bin/pytest -vv
 
 lint:
-	.venv/bin/ruff check src/ tests/
-	.venv/bin/ruff format --check src/ tests/
+	.venv/bin/ruff check cloudrift_runners/ tests/
+	.venv/bin/ruff format --check cloudrift_runners/ tests/
 
 fmt:
-	.venv/bin/ruff format src/ tests/
-	.venv/bin/ruff check --fix src/ tests/
+	.venv/bin/ruff format cloudrift_runners/ tests/
+	.venv/bin/ruff check --fix cloudrift_runners/ tests/
 
 docker-build:
 	docker compose build
